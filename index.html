@@ -1,89 +1,243 @@
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Instant Camera Capture</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Camera Recorder</title>
 
 <style>
   html, body {
     margin: 0;
     padding: 0;
-    background: black;
+    width: 100%;
     height: 100%;
+    background: black;
     overflow: hidden;
   }
 
   video {
     position: fixed;
-    top: 0;
-    left: 0;
+    inset: 0;
     width: 100vw;
     height: 100vh;
     object-fit: cover;
   }
 
-  #captureBtn {
+  #controls {
     position: fixed;
+    z-index: 10;
     bottom: 30px;
     left: 50%;
     transform: translateX(-50%);
-    width: 80px;
-    height: 80px;
+    display: flex;
+    gap: 15px;
+  }
+
+  button {
+    width: 75px;
+    height: 75px;
     border-radius: 50%;
     border: 4px solid white;
-    background: rgba(255,255,255,0.2);
+    background: rgba(255,255,255,.2);
+    color: white;
     cursor: pointer;
   }
 
-  canvas {
-    display: none;
+  #recordBtn.recording {
+    background: rgba(255,0,0,.75);
+  }
+
+  #status {
+    position: fixed;
+    z-index: 20;
+    top: 15px;
+    left: 50%;
+    transform: translateX(-50%);
+
+    padding: 8px 14px;
+    border-radius: 8px;
+
+    color: white;
+    background: rgba(0,0,0,.65);
+
+    font-family: Arial, sans-serif;
   }
 </style>
 </head>
+
 <body>
 
-<video id="video" autoplay playsinline></video>
-<canvas id="canvas"></canvas>
-<button id="captureBtn"></button>
+<video id="preview" autoplay muted playsinline></video>
+
+<div id="status">Starting camera...</div>
+
+<div id="controls">
+  <button id="recordBtn">●</button>
+</div>
 
 <script>
-  const video = document.getElementById("video");
-  const canvas = document.getElementById("canvas");
-  const button = document.getElementById("captureBtn");
+const preview = document.getElementById("preview");
+const recordBtn = document.getElementById("recordBtn");
+const status = document.getElementById("status");
 
-  // Start camera
-  navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment" },
-    audio: false
-  }).then(stream => {
-    video.srcObject = stream;
-  }).catch(err => {
-    alert("Camera access denied");
-    console.error(err);
-  });
+let stream = null;
+let recorder = null;
+let chunks = [];
 
-  button.addEventListener("click", () => {
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+function setStatus(text) {
+  status.textContent = text;
+}
 
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(video, 0, 0);
+async function startCamera() {
 
-    canvas.toBlob(blob => {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
+  if (!navigator.mediaDevices?.getUserMedia) {
+    setStatus("Camera/microphone API unavailable");
+    return;
+  }
 
-      a.href = url;
-      a.download = `photo_${Date.now()}.png`;
-      document.body.appendChild(a);
-      a.click();
+  try {
 
-      URL.revokeObjectURL(url);
-      a.remove();
+    /*
+     * Request BOTH camera and microphone.
+     *
+     * The browser/device must approve this request.
+     */
+    stream = await navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: {
+          ideal: "environment"
+        }
+      },
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      }
     });
-  });
-</script>
 
-</body>
-</html>
+    preview.srcObject = stream;
+
+    await preview.play();
+
+    setStatus("Camera and microphone ready");
+
+  } catch (err) {
+
+    console.error(err);
+
+    switch (err.name) {
+
+      case "NotAllowedError":
+        setStatus("Camera/microphone permission denied");
+        break;
+
+      case "NotFoundError":
+        setStatus("Camera or microphone not found");
+        break;
+
+      case "NotReadableError":
+        setStatus("Camera/microphone is busy");
+        break;
+
+      case "SecurityError":
+        setStatus("Access blocked by security policy");
+        break;
+
+      case "OverconstrainedError":
+        setStatus("Requested device configuration unavailable");
+        break;
+
+      default:
+        setStatus("Unable to access camera/microphone");
+    }
+  }
+}
+
+
+function getSupportedMimeType() {
+
+  const types = [
+    "video/webm;codecs=vp9,opus",
+    "video/webm;codecs=vp8,opus",
+    "video/webm",
+    "video/mp4"
+  ];
+
+  for (const type of types) {
+    if (MediaRecorder.isTypeSupported(type)) {
+      return type;
+    }
+  }
+
+  return "";
+}
+
+
+function startRecording() {
+
+  if (!stream) {
+    setStatus("Camera is not available");
+    return;
+  }
+
+  chunks = [];
+
+  const mimeType = getSupportedMimeType();
+
+  const options = mimeType
+    ? { mimeType }
+    : undefined;
+
+  try {
+
+    recorder = new MediaRecorder(
+      stream,
+      options
+    );
+
+  } catch (err) {
+
+    console.error(err);
+    setStatus("Recording is not supported");
+    return;
+  }
+
+
+  recorder.ondataavailable = event => {
+
+    if (event.data && event.data.size > 0) {
+      chunks.push(event.data);
+    }
+
+  };
+
+
+  recorder.onstop = saveRecording;
+
+  recorder.onerror = event => {
+    console.error(event);
+    setStatus("Recording error");
+  };
+
+
+  recorder.start(1000);
+
+  recordBtn.classList.add("recording");
+  recordBtn.textContent = "■";
+
+  setStatus("Recording...");
+}
+
+
+function stopRecording() {
+
+  if (!recorder) return;
+
+  if (recorder.state !== "inactive") {
+    recorder.stop();
+  }
+
+  recordBtn.classList.remove("recording");
+  recordBtn.textContent =
+```
